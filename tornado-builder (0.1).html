@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tornado Builder</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(180deg,#1b2735 0%,#2c3e50 100%);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #eef2f7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+  }
+  h1 {
+    margin: 4px 0 12px;
+    font-size: 28px;
+    letter-spacing: 1px;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .container { width: 1160px; max-width: 100%; }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .tool-group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .tool-group span { font-size: 12px; opacity: 0.75; margin-right: 2px; }
+  button {
+    cursor: pointer;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 11px;
+    font-size: 13px;
+    font-weight: 600;
+    background: #3a4a5e;
+    color: #eef2f7;
+    transition: transform 0.08s ease, background 0.15s ease;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: #4a5f78; transform: translateY(-1px); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.tool.active, button.level.active, button.blocktype.active {
+    background: #e0a83c;
+    color: #1b2735;
+  }
+  #startBtn { background: #2e9e5b; }
+  #startBtn:hover:not(:disabled) { background: #38b96b; }
+  #restartBtn { background: #c0392b; }
+  #restartBtn:hover:not(:disabled) { background: #d9483a; }
+  #status {
+    text-align: center;
+    font-size: 15px;
+    min-height: 20px;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  #status.win { color: #4be07a; }
+  #status.fail { color: #ff6b6b; }
+  canvas {
+    display: block;
+    width: 100%;
+    background: linear-gradient(180deg,#7ec8f0 0%,#cfe9fb 70%,#8fbf6a 70%,#6ea852 100%);
+    border-radius: 10px;
+    border: 2px solid rgba(255,255,255,0.2);
+    cursor: crosshair;
+  }
+  .hint { text-align:center; font-size:12px; opacity:0.65; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🌪️ Tornado Builder</h1>
+
+  <div class="toolbar">
+    <div class="tool-group">
+      <button id="toolBlock" class="tool active">🧱 Block</button>
+      <button id="toolPerson" class="tool">🧍 You</button>
+      <button id="toolProbe" class="tool">📡 Probe</button>
+      <button id="toolErase" class="tool">🗑️ Erase</button>
+      <button id="clearAll">Clear All</button>
+    </div>
+    <div class="tool-group">
+      <span>Material:</span>
+      <button class="blocktype active" data-type="wood">🪵 Wood</button>
+      <button class="blocktype" data-type="brick">🧱 Brick</button>
+      <button class="blocktype" data-type="concrete">🪨 Concrete</button>
+      <button class="blocktype" data-type="steel">⚙️ Steel</button>
+    </div>
+    <div class="tool-group">
+      <button id="startBtn">▶ Start</button>
+      <button id="restartBtn" style="display:none;">⟲ Restart</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="tool-group">
+      <span>Tornado Strength:</span>
+      <button class="level" data-level="EF0">EF0</button>
+      <button class="level active" data-level="EF1">EF1</button>
+      <button class="level" data-level="EF2">EF2</button>
+      <button class="level" data-level="EF3">EF3</button>
+      <button class="level" data-level="EF4">EF4</button>
+      <button class="level" data-level="EF5">EF5</button>
+      <button class="level" data-level="EF6">EF6</button>
+    </div>
+  </div>
+
+  <div id="status">Build a shelter from blocks, place You inside it, drop a wind probe if you like, pick a tornado strength, then hit Start.</div>
+  <canvas id="game" width="1100" height="620"></canvas>
+  <div class="hint">Blocks snap to the grid, one per cell — you can't stack two on the same spot · Blocks stay anchored (green outline) until the wind exceeds their material's strength, then they break free · Once the tornado hits you can drag one block around · Erase removes whatever you click on</div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const toolBlockBtn = document.getElementById('toolBlock');
+  const toolPersonBtn = document.getElementById('toolPerson');
+  const toolProbeBtn = document.getElementById('toolProbe');
+  const toolEraseBtn = document.getElementById('toolErase');
+  const clearAllBtn = document.getElementById('clearAll');
+  const levelBtns = Array.from(document.querySelectorAll('.level'));
+  const blockTypeBtns = Array.from(document.querySelectorAll('.blocktype'));
+
+  const GROUND_Y = canvas.height - 40;
+  const GRAVITY = 0.42;
+  const DAMAGE_SPEED = 22;             // much higher than before -> a lot easier to survive
+  const CORE_DAMAGE_FACTOR = 0.15;     // smaller instant-danger zone at the tornado's core
+  const FORCE_PER_MPH = 0.0025;        // converts real-feeling mph into game force
+  const BLOCK_SIZE = 30;
+
+  const BLOCK_TYPES = {
+    wood:     { mass: 1.0, color: '#a5723c', dark: '#7c5228', resistance: 70  },
+    brick:    { mass: 1.8, color: '#b5432f', dark: '#8a3020', resistance: 115 },
+    concrete: { mass: 2.8, color: '#9a9ea4', dark: '#6f7276', resistance: 170 },
+    steel:    { mass: 4.2, color: '#5b6b7c', dark: '#37414c', resistance: 250 }
+  };
+
+  // topMPH = wind speed near the top of the funnel, bottomMPH = wind speed near the ground
+  const LEVELS = {
+    EF0: { topMPH: 90,  bottomMPH: 65,  radius: 65,  speed: 1.3, color: 'rgba(170,205,225,1)' },
+    EF1: { topMPH: 120, bottomMPH: 90,  radius: 85,  speed: 1.6, color: 'rgba(150,190,220,1)' },
+    EF2: { topMPH: 150, bottomMPH: 115, radius: 105, speed: 1.9, color: 'rgba(120,160,195,1)' },
+    EF3: { topMPH: 180, bottomMPH: 140, radius: 125, speed: 2.2, color: 'rgba(95,130,165,1)' },
+    EF4: { topMPH: 210, bottomMPH: 165, radius: 150, speed: 2.6, color: 'rgba(75,100,135,1)' },
+    EF5: { topMPH: 245, bottomMPH: 195, radius: 175, speed: 3.0, color: 'rgba(55,70,100,1)' },
+    EF6: { topMPH: 290, bottomMPH: 230, radius: 200, speed: 3.4, color: 'rgba(35,40,52,1)' }
+  };
+
+  let selectedLevel = 'EF1';
+  let selectedBlockType = 'wood';
+  let tool = 'block';
+  let mode = 'build'; // 'build' | 'sim' | 'ended'
+  let blocks = [];
+  let person = null;
+  let probes = [];
+  let tornado = null;
+  let animId = null;
+  let draggedBlock = null;
+  let dragOffsetX = 0, dragOffsetY = 0;
+
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
+
+  function resetAll(){
+    blocks = [];
+    person = null;
+    probes = [];
+    tornado = null;
+    draggedBlock = null;
+    mode = 'build';
+    startBtn.style.display = 'inline-block';
+    startBtn.disabled = false;
+    restartBtn.style.display = 'none';
+    setToolsEnabled(true);
+    statusEl.className = '';
+    statusEl.textContent = 'Build a shelter from blocks, place You inside it, drop a wind probe if you like, pick a tornado strength, then hit Start.';
+  }
+
+  function setToolsEnabled(enabled){
+    [toolBlockBtn, toolPersonBtn, toolProbeBtn, toolEraseBtn, clearAllBtn, ...levelBtns, ...blockTypeBtns]
+      .forEach(b => b.disabled = !enabled);
+  }
+
+  // ---------- Tool selection ----------
+  function setTool(name){
+    tool = name;
+    [toolBlockBtn, toolPersonBtn, toolProbeBtn, toolEraseBtn].forEach(b => b.classList.remove('active'));
+    if(name === 'block') toolBlockBtn.classList.add('active');
+    if(name === 'person') toolPersonBtn.classList.add('active');
+    if(name === 'probe') toolProbeBtn.classList.add('active');
+    if(name === 'erase') toolEraseBtn.classList.add('active');
+  }
+  toolBlockBtn.onclick = () => setTool('block');
+  toolPersonBtn.onclick = () => setTool('person');
+  toolProbeBtn.onclick = () => setTool('probe');
+  toolEraseBtn.onclick = () => setTool('erase');
+  clearAllBtn.onclick = () => { blocks = []; person = null; probes = []; draggedBlock = null; };
+
+  levelBtns.forEach(btn => {
+    btn.onclick = () => {
+      selectedLevel = btn.dataset.level;
+      levelBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    };
+  });
+
+  blockTypeBtns.forEach(btn => {
+    btn.onclick = () => {
+      selectedBlockType = btn.dataset.type;
+      blockTypeBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    };
+  });
+
+  // ---------- Canvas interactions ----------
+  function getCanvasCoords(e){
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    const { x, y } = getCanvasCoords(e);
+
+    if(mode === 'build'){
+      if(tool === 'block'){
+        // snapped to the grid — one block per cell max, so it's impossible to
+        // stack two blocks on the exact same spot. Placement is instant and
+        // anchored: no falling. It stays put until the tornado's wind exceeds
+        // its material's wind resistance, at which point it breaks free.
+        const t = BLOCK_TYPES[selectedBlockType];
+        const gx = clamp(Math.round((x - BLOCK_SIZE/2) / BLOCK_SIZE) * BLOCK_SIZE, 0, canvas.width - BLOCK_SIZE);
+        const gy = clamp(Math.round((y - BLOCK_SIZE/2) / BLOCK_SIZE) * BLOCK_SIZE, 0, GROUND_Y - BLOCK_SIZE);
+        const occupied = blocks.some(b => b.x === gx && b.y === gy);
+        if(!occupied){
+          blocks.push({
+            x: gx, y: gy, w: BLOCK_SIZE, h: BLOCK_SIZE,
+            vx: 0, vy: 0, angle: 0, vangle: 0,
+            type: selectedBlockType, mass: t.mass, color: t.color, dark: t.dark,
+            resistance: t.resistance, broken: false
+          });
+        }
+      } else if(tool === 'person'){
+        person = {
+          x: clamp(x, 14, canvas.width-14),
+          y: clamp(y, 14, GROUND_Y-2),
+          r: 13, vx: 0, vy: 0, mass: 1.3, damaged: false
+        };
+      } else if(tool === 'probe'){
+        if(probes.length < 6){
+          probes.push({ x: clamp(x, 6, canvas.width-6), y: clamp(y, 6, GROUND_Y-2) });
+        }
+      } else if(tool === 'erase'){
+        for(let i = blocks.length - 1; i >= 0; i--){
+          const b = blocks[i];
+          if(x >= b.x && x <= b.x+b.w && y >= b.y && y <= b.y+b.h){ blocks.splice(i,1); return; }
+        }
+        for(let i = probes.length - 1; i >= 0; i--){
+          if(Math.hypot(probes[i].x-x, probes[i].y-y) <= 14){ probes.splice(i,1); return; }
+        }
+        if(person && Math.hypot(person.x-x, person.y-y) <= person.r+6){ person = null; }
+      }
+    } else if(mode === 'sim'){
+      for(let i = blocks.length - 1; i >= 0; i--){
+        const b = blocks[i];
+        if(x >= b.x && x <= b.x+b.w && y >= b.y && y <= b.y+b.h){
+          draggedBlock = b;
+          draggedBlock.broken = true; // grabbing it detaches it from the structure
+          dragOffsetX = x - b.x;
+          dragOffsetY = y - b.y;
+          b.vx = 0; b.vy = 0; b.vangle = 0;
+          break;
+        }
+      }
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if(mode !== 'sim' || !draggedBlock) return;
+    const { x, y } = getCanvasCoords(e);
+    const nx = x - dragOffsetX, ny = y - dragOffsetY;
+    draggedBlock.vx = nx - draggedBlock.x;
+    draggedBlock.vy = ny - draggedBlock.y;
+    draggedBlock.x = nx;
+    draggedBlock.y = ny;
+  });
+
+  window.addEventListener('mouseup', () => {
+    if(draggedBlock){
+      draggedBlock.vx = clamp(draggedBlock.vx, -25, 25);
+      draggedBlock.vy = clamp(draggedBlock.vy, -25, 25);
+      draggedBlock = null;
+    }
+  });
+
+  // ---------- Physics helpers ----------
+  function resolveBlockBlock(a,b){
+    const dx = (a.x+a.w/2)-(b.x+b.w/2);
+    const dy = (a.y+a.h/2)-(b.y+b.h/2);
+    const overlapX = (a.w+b.w)/2 - Math.abs(dx);
+    const overlapY = (a.h+b.h)/2 - Math.abs(dy);
+    if(overlapX > 0 && overlapY > 0){
+      const aFixed = a === draggedBlock || !a.broken;
+      const bFixed = b === draggedBlock || !b.broken;
+      if(aFixed && bFixed) return; // both immovable — nothing can be resolved
+      const massA = a.mass || 1, massB = b.mass || 1;
+      const aShare = aFixed ? 0 : bFixed ? 1 : massB/(massA+massB);
+      const bShare = 1 - aShare;
+      if(overlapX < overlapY){
+        const dir = dx < 0 ? -1 : 1;
+        if(aFixed){ b.x -= overlapX*dir; b.vx *= 0.4; }
+        else if(bFixed){ a.x += overlapX*dir; a.vx *= 0.4; }
+        else {
+          a.x += overlapX*aShare*dir; b.x -= overlapX*bShare*dir;
+          const avg = (a.vx*massA + b.vx*massB)/(massA+massB);
+          a.vx = avg*0.6; b.vx = avg*0.6;
+        }
+      } else {
+        const dir = dy < 0 ? -1 : 1;
+        if(aFixed){ b.y -= overlapY*dir; b.vy = Math.min(b.vy, 0); }
+        else if(bFixed){ a.y += overlapY*dir; a.vy = Math.min(a.vy, 0); }
+        else {
+          a.y += overlapY*aShare*dir; b.y -= overlapY*bShare*dir;
+          if(dy < 0){ a.vy = Math.min(a.vy, 0); a.vangle *= 0.8; }
+          else { b.vy = Math.min(b.vy, 0); b.vangle *= 0.8; }
+        }
+      }
+    }
+  }
+
+  function resolvePersonBlock(p,b){
+    const closestX = Math.max(b.x, Math.min(p.x, b.x+b.w));
+    const closestY = Math.max(b.y, Math.min(p.y, b.y+b.h));
+    const dx = p.x - closestX, dy = p.y - closestY;
+    const dist = Math.hypot(dx,dy);
+    if(dist < p.r){
+      const nx = dist > 0.0001 ? dx/dist : 0;
+      const ny = dist > 0.0001 ? dy/dist : -1;
+      const overlap = p.r - dist;
+      p.x += nx*overlap; p.y += ny*overlap;
+      const vn = p.vx*nx + p.vy*ny;
+      if(vn < 0){ p.vx -= vn*nx; p.vy -= vn*ny; }
+    }
+  }
+
+  // The single source of truth for "how strong is the wind at this exact point right now" —
+  // used both to push objects around AND to drive the probe's mph readout.
+  function localWindMPH(x,y){
+    if(!tornado) return 0;
+    const dx = x - tornado.x, dy = y - tornado.coreY;
+    const dist = Math.hypot(dx,dy) + 0.001;
+    const maxDist = tornado.radius * 3.2;
+    const falloff = Math.max(0, 1 - dist/maxDist);
+    const heightT = clamp(y / GROUND_Y, 0, 1);
+    const baseMPH = lerp(tornado.topMPH, tornado.bottomMPH, heightT); // stronger up high, weaker down low
+    const gust = 0.9 + 0.18 * Math.sin(tornado.wobble*1.6 + x*0.02 + y*0.015); // dynamic, gusty wind
+    return Math.max(0, baseMPH * falloff * gust);
+  }
+
+  function tornadoForce(obj){
+    if(!tornado) return;
+    const cx = obj.x + (obj.w ? obj.w/2 : 0);
+    const cy = obj.y + (obj.h ? obj.h/2 : 0);
+    const mph = localWindMPH(cx, cy);
+    if(mph <= 0.5) return;
+    const dx = cx - tornado.x, dy = cy - tornado.coreY;
+    const dist = Math.hypot(dx,dy) + 0.001;
+    const pull = mph * FORCE_PER_MPH;
+    const mass = obj.mass || 1;
+    const tx = -dy/dist, ty = dx/dist;       // tangential (swirl)
+    const ix = -dx/dist, iy = -dy/dist;      // inward pull
+    obj.vx += (tx*pull*3.8 + ix*pull*1.2) / mass;
+    obj.vy += (ty*pull*3.8 + iy*pull*1.2 - pull*1.9) / mass; // upward lift
+  }
+
+  function endGame(won){
+    mode = 'ended';
+    startBtn.style.display = 'none';
+    restartBtn.style.display = 'inline-block';
+    setToolsEnabled(false);
+    statusEl.className = won ? 'win' : 'fail';
+    statusEl.textContent = won
+      ? `Success! Your shelter survived the ${selectedLevel} tornado and You are safe! 🎉`
+      : `You were hit by the ${selectedLevel} tornado! Building destroyed. 💥`;
+  }
+
+  // ---------- Main loop (always running; physics only active during sim) ----------
+  function step(){
+    if(mode === 'sim'){
+      blocks.forEach(b => {
+        if(b === draggedBlock) return;
+        const cx = b.x + b.w/2, cy = b.y + b.h/2;
+        const mph = localWindMPH(cx, cy);
+        if(!b.broken && mph >= b.resistance){
+          b.broken = true; // wind finally exceeded what this material can hold
+        }
+        if(!b.broken){
+          b.vx = 0; b.vy = 0; b.vangle = 0;
+          return; // still anchored — holds its position no matter what's nearby
+        }
+        tornadoForce(b);
+        b.vy += GRAVITY;
+        b.x += b.vx; b.y += b.vy;
+        b.angle += b.vangle;
+        b.vx *= 0.97; b.vangle *= 0.95;
+
+        if(b.y + b.h > GROUND_Y){ b.y = GROUND_Y - b.h; b.vy *= -0.15; b.vx *= 0.8; b.vangle *= 0.6; }
+        if(b.x < 0){ b.x = 0; b.vx *= -0.4; }
+        if(b.x + b.w > canvas.width){ b.x = canvas.width - b.w; b.vx *= -0.4; }
+      });
+
+      for(let iter = 0; iter < 3; iter++){
+        for(let i = 0; i < blocks.length; i++){
+          for(let j = i+1; j < blocks.length; j++){
+            resolveBlockBlock(blocks[i], blocks[j]);
+          }
+        }
+      }
+
+      if(person){
+        tornadoForce(person);
+        person.vy += GRAVITY * 0.9;
+        person.x += person.vx; person.y += person.vy;
+        person.vx *= 0.97;
+
+        if(person.y + person.r > GROUND_Y){ person.y = GROUND_Y - person.r; person.vy *= -0.1; person.vx *= 0.7; }
+        if(person.x < person.r){ person.x = person.r; person.vx *= -0.4; }
+        if(person.x > canvas.width - person.r){ person.x = canvas.width - person.r; person.vx *= -0.4; }
+
+        for(let iter = 0; iter < 2; iter++){
+          blocks.forEach(b => resolvePersonBlock(person, b));
+        }
+
+        if(!person.damaged){
+          const speed = Math.hypot(person.vx, person.vy);
+          const distToCore = Math.hypot(person.x - tornado.x, person.y - tornado.coreY);
+          if(speed > DAMAGE_SPEED || distToCore < tornado.radius * CORE_DAMAGE_FACTOR){
+            person.damaged = true;
+            endGame(false);
+          }
+        }
+      }
+
+      tornado.x += tornado.speed * tornado.dir;
+      tornado.wobble += 0.15;
+      if((tornado.dir === 1 && tornado.x > canvas.width + 220) ||
+         (tornado.dir === -1 && tornado.x < -220)){
+        if(!person || !person.damaged) endGame(true);
+      }
+    }
+
+    draw();
+    animId = requestAnimationFrame(step);
+  }
+
+  // ---------- Drawing ----------
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function drawProbe(p){
+    const mph = Math.round(localWindMPH(p.x, p.y));
+    ctx.save();
+    ctx.strokeStyle = '#2b2f36'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y-18); ctx.stroke();
+    ctx.fillStyle = '#e0a83c';
+    ctx.beginPath(); ctx.arc(p.x, p.y-18, 6, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#1b2735'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    const label = mph + ' mph';
+    ctx.font = 'bold 12px Segoe UI, Arial';
+    const tw = ctx.measureText(label).width;
+    const boxW = tw + 14, boxH = 20;
+    const boxX = p.x - boxW/2, boxY = p.y - 48;
+    const color = mph < 40 ? '#2ecc71' : mph < 90 ? '#f1c40f' : mph < 160 ? '#e67e22' : '#e74c3c';
+    ctx.fillStyle = 'rgba(15,20,28,0.88)';
+    roundRect(boxX, boxY, boxW, boxH, 5); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+    roundRect(boxX, boxY, boxW, boxH, 5); ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, p.x, boxY + boxH/2 + 1);
+    ctx.restore();
+  }
+
+  function drawTornado(t){
+    ctx.save();
+    const segments = 50;
+    for(let i = 0; i < segments; i++){
+      const f = i / segments;
+      const y = f * GROUND_Y;
+      const width = t.radius * (0.25 + 0.85 * f);
+      const xOff = Math.sin(f * 9 + t.wobble) * 14 * f;
+      ctx.globalAlpha = 0.12 + 0.14 * f;
+      ctx.fillStyle = t.color;
+      ctx.beginPath();
+      ctx.ellipse(t.x + xOff, y, width/2, 9, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const sky = ctx.createLinearGradient(0,0,0,GROUND_Y);
+    sky.addColorStop(0, '#7ec8f0');
+    sky.addColorStop(1, '#cfe9fb');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0,0,canvas.width,GROUND_Y);
+
+    const grnd = ctx.createLinearGradient(0,GROUND_Y,0,canvas.height);
+    grnd.addColorStop(0, '#8fbf6a');
+    grnd.addColorStop(1, '#5f9944');
+    ctx.fillStyle = grnd;
+    ctx.fillRect(0,GROUND_Y,canvas.width,canvas.height-GROUND_Y);
+
+    if(mode === 'build'){
+      ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+      ctx.lineWidth = 1;
+      for(let gx = 0; gx <= canvas.width; gx += BLOCK_SIZE){
+        ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,GROUND_Y); ctx.stroke();
+      }
+      for(let gy = 0; gy <= GROUND_Y; gy += BLOCK_SIZE){
+        ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(canvas.width,gy); ctx.stroke();
+      }
+    }
+
+    if(tornado) drawTornado(tornado);
+
+    blocks.forEach(b => {
+      ctx.save();
+      ctx.translate(b.x + b.w/2, b.y + b.h/2);
+      ctx.rotate(b.angle);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(-b.w/2, -b.h/2, b.w, b.h);
+      const holding = mode === 'sim' && !b.broken;
+      ctx.strokeStyle = holding ? '#2ecc71' : (b.dark || 'rgba(0,0,0,0.3)');
+      ctx.lineWidth = holding ? 3 : 2;
+      ctx.strokeRect(-b.w/2, -b.h/2, b.w, b.h);
+      ctx.restore();
+    });
+
+    probes.forEach(p => drawProbe(p));
+
+    if(person){
+      ctx.save();
+      ctx.translate(person.x, person.y);
+      ctx.fillStyle = person.damaged ? '#e74c3c' : '#2d6cdf';
+      ctx.beginPath();
+      ctx.arc(0,0,person.r,0,Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-4,-2,2,0,Math.PI*2); ctx.arc(4,-2,2,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ---------- Start / Restart ----------
+  startBtn.onclick = () => {
+    if(!person){
+      statusEl.className = 'fail';
+      statusEl.textContent = 'Place You somewhere before starting!';
+      return;
+    }
+    const cfg = LEVELS[selectedLevel];
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    tornado = {
+      dir,
+      x: dir === 1 ? -180 : canvas.width + 180,
+      speed: cfg.speed,
+      topMPH: cfg.topMPH,
+      bottomMPH: cfg.bottomMPH,
+      radius: cfg.radius,
+      coreY: GROUND_Y - 260,
+      color: cfg.color,
+      wobble: 0
+    };
+    mode = 'sim';
+    startBtn.style.display = 'none';
+    restartBtn.style.display = 'inline-block';
+    setToolsEnabled(false);
+    statusEl.className = '';
+    statusEl.textContent = `A ${selectedLevel} tornado is approaching! Hold on...`;
+  };
+
+  restartBtn.onclick = resetAll;
+
+  step();
+})();
+</script>
+</body>
+</html>
